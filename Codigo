@@ -1,0 +1,84 @@
+from netmiko import ConnectHandler
+from tabulate import tabulate
+import pandas as pd
+import json
+import os
+
+os.environ["NET_TEXTFSM"] = "/root/ntc-templates/templates"
+
+equipos = {
+    "SW1": "10.10.10.1",
+    "SW2": "10.10.10.2",
+    "SW3": "10.10.10.3",
+    "SW4": "10.10.10.4"
+}
+
+acceso = {
+    "device_type": "cisco_ios",
+    "username": "admin",
+    "password": "admin123",
+    "secret": "admin123"
+}
+
+datos_tabla = []
+detalle_json = {}
+
+for nombre_sw, direccion_ip in equipos.items():
+    equipo = acceso.copy()
+    equipo["host"] = direccion_ip
+
+    try:
+        conexion = ConnectHandler(**equipo)
+        conexion.enable()
+
+        info_version = conexion.send_command("show version", use_textfsm=True)[0]
+        info_vlan = conexion.send_command("show vlan brief", use_textfsm=True)
+        info_interfaces = conexion.send_command("show ip interface brief", use_textfsm=True)
+        info_cdp = conexion.send_command("show cdp neighbors detail", use_textfsm=True)
+
+        hosts = [vec.get("destination_host", "N/D") for vec in info_cdp]
+        ips = [vec.get("management_ip", "N/D") for vec in info_cdp]
+        modelos = [vec.get("platform", "N/D") for vec in info_cdp]
+
+        datos_tabla.append([
+            nombre_sw,
+            direccion_ip,
+            info_version.get("hostname", "N/D"),
+            info_version.get("version", "N/D"),
+            info_version.get("hardware", ["N/D"])[0],
+            info_version.get("serial", "N/D"),
+            info_version.get("uptime", "N/D"),
+            len(info_vlan),
+            len(info_interfaces),
+            len(info_cdp),
+            ", ".join(hosts),
+            ", ".join(ips),
+            ", ".join(modelos)
+        ])
+
+        detalle_json[nombre_sw] = {
+            "ip": direccion_ip,
+            "hostname": info_version.get("hostname", "N/D"),
+            "version": info_version,
+            "vlans": info_vlan,
+            "interfaces": info_interfaces,
+            "cdp": info_cdp
+        }
+
+        conexion.disconnect()
+
+    except Exception as error:
+        datos_tabla.append([nombre_sw, direccion_ip] + ["ERROR"] * 11)
+
+columnas = [
+    "Dispositivo", "Dirección IP", "Nombre", "Versión IOS", "Modelo", "N° Serie", "Tiempo Activo",
+    "Total VLANs", "Interfaces IP", "Vecinos CDP", "Host Vecinos", "IP Vecinos", "Modelo Vecinos"
+]
+
+print("\nResumen del Inventario:\n")
+print(tabulate(datos_tabla, headers=columnas, tablefmt="grid"))
+
+with open("reporte_inventario.json", "w") as archivo_json:
+    json.dump(detalle_json, archivo_json, indent=2)
+
+pd.DataFrame(datos_tabla, columns=columnas).to_excel("reporte_inventario.xlsx", index=False)
